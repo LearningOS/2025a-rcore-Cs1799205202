@@ -48,6 +48,109 @@ impl MemorySet {
     pub fn token(&self) -> usize {
         self.page_table.token()
     }
+    /// mmap
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> isize {
+        if start % PAGE_SIZE != 0 {
+            return -1;
+        }
+        let len = (len + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
+        if len == 0 {
+            return 0;
+        }
+        if (prot & !0x7) != 0 || (prot & 0x7) == 0 {
+            return -1;
+        }
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+        for area in self.areas.iter() {
+            let area_start = area.vpn_range.get_start();
+            let area_end = area.vpn_range.get_end();
+            if start_vpn.0 < area_end.0 && end_vpn.0 > area_start.0 {
+                return -1;
+            }
+        }
+        let mut map_perm = MapPermission::U;
+        if (prot & 1) != 0 {
+            map_perm |= MapPermission::R;
+        }
+        if (prot & 2) != 0 {
+            map_perm |= MapPermission::W;
+        }
+        if (prot & 4) != 0 {
+            map_perm |= MapPermission::X;
+        }
+        let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
+        self.push(map_area, None);
+        0
+    }
+    /// munmap
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        if start % PAGE_SIZE != 0 {
+            return -1;
+        }
+        let len = (len + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
+        if len == 0 {
+            return 0;
+        }
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+        for vpn in start_vpn.0..end_vpn.0 {
+            match self.translate(VirtPageNum(vpn)) {
+                Some(pte) => {
+                    if !pte.is_valid() {
+                        return -1;
+                    }
+                }
+                None => return -1,
+            }
+        }
+        let mut new_areas = Vec::new();
+        let mut old_areas = Vec::new();
+        core::mem::swap(&mut self.areas, &mut old_areas);
+        for mut area in old_areas {
+            let area_start = area.vpn_range.get_start();
+            let area_end = area.vpn_range.get_end();
+            let intersect_start = core::cmp::max(start_vpn.0, area_start.0);
+            let intersect_end = core::cmp::min(end_vpn.0, area_end.0);
+            if intersect_start >= intersect_end {
+                new_areas.push(area);
+                continue;
+            }
+            for vpn in intersect_start..intersect_end {
+                let vpn = VirtPageNum(vpn);
+                area.unmap_one(&mut self.page_table, vpn);
+            }
+            if intersect_start == area_start.0 && intersect_end == area_end.0 {
+                continue;
+            }
+            if intersect_start == area_start.0 {
+                area.vpn_range = VPNRange::new(VirtPageNum(intersect_end), area_end);
+                new_areas.push(area);
+                continue;
+            }
+            if intersect_end == area_end.0 {
+                area.vpn_range = VPNRange::new(area_start, VirtPageNum(intersect_start));
+                new_areas.push(area);
+                continue;
+            }
+            let right_frames = area.data_frames.split_off(&VirtPageNum(intersect_end));
+            let right_area = MapArea {
+                vpn_range: VPNRange::new(VirtPageNum(intersect_end), area_end),
+                data_frames: right_frames,
+                map_type: area.map_type,
+                map_perm: area.map_perm,
+            };
+            area.vpn_range = VPNRange::new(area_start, VirtPageNum(intersect_start));
+            new_areas.push(area);
+            new_areas.push(right_area);
+        }
+        self.areas = new_areas;
+        0
+    }
     /// Assume that no conflicts.
     pub fn insert_framed_area(
         &mut self,
