@@ -12,18 +12,22 @@ pub trait Mutex: Sync + Send {
     fn lock(&self);
     /// Unlock the mutex
     fn unlock(&self);
+    /// Get the owner of the mutex
+    fn get_owner(&self) -> Option<usize>;
+    /// Get the waiting tasks of the mutex
+    fn get_waiting_tasks(&self) -> alloc::vec::Vec<usize>;
 }
 
 /// Spinlock Mutex struct
 pub struct MutexSpin {
-    locked: UPSafeCell<bool>,
+    locked: UPSafeCell<Option<usize>>,
 }
 
 impl MutexSpin {
     /// Create a new spinlock mutex
     pub fn new() -> Self {
         Self {
-            locked: unsafe { UPSafeCell::new(false) },
+            locked: unsafe { UPSafeCell::new(None) },
         }
     }
 }
@@ -34,12 +38,12 @@ impl Mutex for MutexSpin {
         trace!("kernel: MutexSpin::lock");
         loop {
             let mut locked = self.locked.exclusive_access();
-            if *locked {
+            if locked.is_some() {
                 drop(locked);
                 suspend_current_and_run_next();
                 continue;
             } else {
-                *locked = true;
+                *locked = Some(current_task().unwrap().inner_exclusive_access().res.as_ref().unwrap().tid);
                 return;
             }
         }
@@ -48,7 +52,15 @@ impl Mutex for MutexSpin {
     fn unlock(&self) {
         trace!("kernel: MutexSpin::unlock");
         let mut locked = self.locked.exclusive_access();
-        *locked = false;
+        *locked = None;
+    }
+
+    fn get_owner(&self) -> Option<usize> {
+        *self.locked.exclusive_access()
+    }
+
+    fn get_waiting_tasks(&self) -> alloc::vec::Vec<usize> {
+        alloc::vec::Vec::new()
     }
 }
 
@@ -59,6 +71,7 @@ pub struct MutexBlocking {
 
 pub struct MutexBlockingInner {
     locked: bool,
+    owner: Option<usize>,
     wait_queue: VecDeque<Arc<TaskControlBlock>>,
 }
 
@@ -70,6 +83,7 @@ impl MutexBlocking {
             inner: unsafe {
                 UPSafeCell::new(MutexBlockingInner {
                     locked: false,
+                    owner: None,
                     wait_queue: VecDeque::new(),
                 })
             },
@@ -88,6 +102,7 @@ impl Mutex for MutexBlocking {
             block_current_and_run_next();
         } else {
             mutex_inner.locked = true;
+            mutex_inner.owner = Some(current_task().unwrap().inner_exclusive_access().res.as_ref().unwrap().tid);
         }
     }
 
@@ -97,9 +112,19 @@ impl Mutex for MutexBlocking {
         let mut mutex_inner = self.inner.exclusive_access();
         assert!(mutex_inner.locked);
         if let Some(waking_task) = mutex_inner.wait_queue.pop_front() {
+            mutex_inner.owner = Some(waking_task.inner_exclusive_access().res.as_ref().unwrap().tid);
             wakeup_task(waking_task);
         } else {
             mutex_inner.locked = false;
+            mutex_inner.owner = None;
         }
+    }
+
+    fn get_owner(&self) -> Option<usize> {
+        self.inner.exclusive_access().owner
+    }
+
+    fn get_waiting_tasks(&self) -> alloc::vec::Vec<usize> {
+        self.inner.exclusive_access().wait_queue.iter().map(|task| task.inner_exclusive_access().res.as_ref().unwrap().tid).collect()
     }
 }

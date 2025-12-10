@@ -52,6 +52,7 @@ pub const SYSCALL_FORK: usize = 220;
 pub const SYSCALL_EXEC: usize = 221;
 /// waitpid syscall
 pub const SYSCALL_WAITPID: usize = 260;
+
 /// set priority syscall
 pub const SYSCALL_SET_PRIORITY: usize = 140;
 /*
