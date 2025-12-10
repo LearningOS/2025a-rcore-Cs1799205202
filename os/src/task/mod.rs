@@ -133,6 +133,40 @@ impl TaskManager {
         inner.tasks[cur].change_program_brk(size)
     }
 
+    /// mmap for current task
+    pub fn mmap_current(&self, start: usize, len: usize, prot: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.mmap(start, len, prot)
+    }
+
+    /// munmap for current task
+    pub fn munmap_current(&self, start: usize, len: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.munmap(start, len)
+    }
+
+    /// Record syscall times
+    pub fn record_syscall(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        if syscall_id < 500 {
+            inner.tasks[cur].syscall_times[syscall_id] += 1;
+        }
+    }
+
+    /// Get syscall times
+    pub fn get_syscall_times(&self, syscall_id: usize) -> u32 {
+        let inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        if syscall_id < 500 {
+            inner.tasks[cur].syscall_times[syscall_id]
+        } else {
+            0
+        }
+    }
+
     /// Switch current `Running` task to the task we have found,
     /// or there is no `Ready` task and we can exit with all applications completed
     fn run_next_task(&self) {
@@ -201,4 +235,24 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// mmap for current task
+pub fn mmap_current(start: usize, len: usize, prot: usize) -> isize {
+    TASK_MANAGER.mmap_current(start, len, prot)
+}
+
+/// munmap for current task
+pub fn munmap_current(start: usize, len: usize) -> isize {
+    TASK_MANAGER.munmap_current(start, len)
+}
+
+/// Record syscall times
+pub fn record_syscall(syscall_id: usize) {
+    TASK_MANAGER.record_syscall(syscall_id);
+}
+
+/// Get syscall times
+pub fn get_syscall_times(syscall_id: usize) -> u32 {
+    TASK_MANAGER.get_syscall_times(syscall_id)
 }
